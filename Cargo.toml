@@ -1,0 +1,14 @@
+[package]
+name = "rcaudiolib"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = ["rmaf", "c-compatible"]
+rmaf = []
+c-compatible = []
+
+[dependencies]
+anyhow = "1.0.102"
+derive-new = "0.7.0"
+num-traits = "0.2.19"
