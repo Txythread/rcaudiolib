@@ -1,6 +1,7 @@
 use std::fs::File;
 use std::io::Bytes;
 use anyhow::anyhow;
+use log::info;
 use crate::wave::Wave;
 
 
@@ -14,14 +15,14 @@ pub fn load_bytes(raw_data: Bytes<File>) -> Result<Wave, anyhow::Error> {
 
     for _ in 0..characters_count {
         if raw_data.next().unwrap().ok() != Some(rmaf_file_indicator.next().unwrap() as u8) {
-            return Err(anyhow!("Expected RMAF file but another file type was provided."))
+            return Err(anyhow!("rcaudio: Expected RMAF file but another file type was provided."))
         }
     }
 
     let version: u32 = convert_bits_32(&mut raw_data, false);
 
     if version != 0 {
-        return Err(anyhow!("RMAF file version unknown. Known versions: 0. Version Found: {version}"));
+        return Err(anyhow!("rcaudio: RMAF file version unknown. Known versions: 0. Version Found: {version}"));
     }
 
     let section_index: u32 = convert_bits_32(&mut raw_data, false);
@@ -34,20 +35,38 @@ pub fn load_bytes(raw_data: Bytes<File>) -> Result<Wave, anyhow::Error> {
     let actual_code: u32 = convert_bits_32(&mut raw_data, true);
 
     if header_end_code != actual_code {
-        return Err(anyhow!("RMAF file header seems to have been corrupted. Expected {:#x}, received: {:#x}", header_end_code, actual_code));
+        return Err(anyhow!("rcaudio: RMAF file header seems to have been corrupted. Expected {:#x}, received: {:#x}", header_end_code, actual_code));
     }
 
     let mut samples: Vec<f32> = Vec::new();
 
+    let mut zeroes_count = 0;
+
     while let Some(byte1) = raw_data.next() {
         let byte1 = byte1? as u16;
-        let byte2 = raw_data.next().unwrap().unwrap() as u16;
 
-        let data = (byte1 << 8) | byte2;
+        if let Some(byte2_raw) = raw_data.next() {
+            let byte2 = match byte2_raw { Ok(t) => t, _ => break } as u16;
 
-        let sample = f16_to_f32(data);
-        samples.push(sample);
+            _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let data = ((byte2 & 0x00FF) << 8) | byte1;
+
+
+
+                let sample = f16_to_f32(data);
+
+                if sample == 0f32 { zeroes_count += 1; }
+
+                samples.push(sample);
+            }));
+
+        } else {
+            break;
+        }
     }
+
+    crate::setup_logger();
+    info!("rcaudio: {zeroes_count}/{} samples were zeroes.", samples.len());
 
 
 
@@ -57,22 +76,26 @@ pub fn load_bytes(raw_data: Bytes<File>) -> Result<Wave, anyhow::Error> {
 }
 
 fn f16_to_f32(f16_value: u16) -> f32 {
-    // The base value containing the sign for the mantissa
-    let f32_mantissa = if f16_value & 0x03_00 != 0 { 0x7F_FC_00u32 } else { 0x0u32 };
-    let f16_mantissa = (f16_value as u32) & 0x03_FF;
+    // TODO: This can be done on the GPU for large datasets instead of the CPU
+    let h = f16_value as u32;
 
-    let mantissa = f16_mantissa | f32_mantissa;
+    let sign     = (h & 0x8000) << 16;           // bit 15 → bit 31
+    let exponent = (h & 0x7C00) >> 10;            // bits 14-10
+    let mantissa = (h & 0x03FF) << 13;            // bits 9-0 → bits 22-13
 
-    let f32_exponent = if f16_value & 0x80_00 != 0 { 0xF0_00u32 } else { 0x0u32 };
-    let f16_exponent = ((f16_value as u32) & 0xFC_00) >> 3;
+    let f32_bits = if exponent == 0 {
+        // zero or subnormal
+        sign | mantissa
+    } else if exponent == 31 {
+        // inf or NaN
+        sign | 0x7F80_0000 | mantissa
+    } else {
+        // normal: rebias exponent from 15 to 127 (+112)
+        sign | ((exponent + 112) << 23) | mantissa
+    };
 
-    let exponent = f32_exponent | f16_exponent;
-
-    let value_u32 = mantissa | exponent;
-
-    f32::from_bits(value_u32)
+    f32::from_bits(f32_bits)
 }
-
 
 fn convert_bits_32<T: std::ops::BitOrAssign<T>>(from: &mut Bytes<File>, little_endian: bool) -> T {
     let size = size_of::<T>();

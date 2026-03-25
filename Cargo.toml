@@ -3,6 +3,10 @@ name = "rcaudiolib"
 version = "0.1.0"
 edition = "2024"
 
+
+[lib]
+crate-type=["cdylib"]
+
 [features]
 default = ["rmaf", "c-compatible"]
 rmaf = []
@@ -12,3 +16,5 @@ c-compatible = []
 anyhow = "1.0.102"
 derive-new = "0.7.0"
 num-traits = "0.2.19"
+log = "0.4.29"
+oslog = "0.2.0"
